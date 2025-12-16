@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ConnectChat Ultra - Secure Group Video Calls</title>
+    <meta name="description" content="End-to-end encrypted group video calls, chat, and file sharing">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Crypto Library for E2E Encryption -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+
+    <!-- Favicon -->
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔒</text></svg>">
+</head>
+
+<body>
+    <!-- Join Screen -->
+    <div id="join-screen" class="screen active">
+        <div class="join-container">
+            <div class="logo-section">
+                <div class="logo-icon">
+                    <i class="fas fa-video"></i>
+                </div>
+                <h1>ConnectChat Ultra</h1>
+                <p class="tagline">🔒 End-to-End Encrypted • Group Calls • Screen Share</p>
+            </div>
+
+            <div class="join-form">
+                <div class="input-group">
+                    <label for="username">
+                        <i class="fas fa-user"></i> Your Name
+                    </label>
+                    <input type="text" id="username" placeholder="Enter your name..." maxlength="20" autocomplete="off">
+                </div>
+
+                <div class="input-group">
+                    <label for="room-code">
+                        <i class="fas fa-key"></i> Room Code
+                    </label>
+                    <input type="text" id="room-code" placeholder="e.g., MEETING2024, STUDY123..." maxlength="20"
+                        autocomplete="off">
+                    <span class="hint">
+                        <i class="fas fa-info-circle"></i> Share this code with friends to connect
+                    </span>
+                </div>
+
+                <button id="generate-code" class="btn-secondary">
+                    <i class="fas fa-random"></i> Generate Random Code
+                </button>
+
+                <button id="join-btn" class="btn-primary">
+                    <i class="fas fa-rocket"></i> Join Room
+                </button>
+            </div>
+
+            <div class="features-grid">
+                <div class="feature-card">
+                    <i class="fas fa-users"></i>
+                    <span>Group Chat</span>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-video"></i>
+                    <span>Video Calls</span>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-desktop"></i>
+                    <span>Screen Share</span>
+                </div>
+                <div class="feature-card">
+                    <i class="fas fa-lock"></i>
+                    <span>E2E Encrypted</span>
+                </div>
+            </div>
+
+            <div class="footer-info">
+                <p>No signup required • Free forever • Open source</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Chat Screen -->
+    <div id="chat-screen" class="screen">
+        <!-- Header -->
+        <header class="chat-header">
+            <div class="header-left">
+                <button id="leave-btn" class="icon-btn" title="Leave Room">
+                    <i class="fas fa-arrow-left"></i>
+                </button>
+                <div class="room-info">
+                    <h2 id="room-title">Room</h2>
+                    <div class="room-meta">
+                        <span id="user-count" class="status-badge">
+                            <i class="fas fa-circle pulse"></i> Connecting...
+                        </span>
+                        <span id="encryption-status" class="encryption-badge">
+                            <i class="fas fa-lock"></i> Encrypted
+                        </span>
+                    </div>
+                </div>
+            </div>
+            <div class="header-right">
+                <button id="voice-call-btn" class="icon-btn" title="Start Voice Call">
+                    <i class="fas fa-phone"></i>
+                </button>
+                <button id="video-call-btn" class="icon-btn" title="Start Video Call">
+                    <i class="fas fa-video"></i>
+                </button>
+                <button id="screen-share-btn" class="icon-btn" title="Share Screen">
+                    <i class="fas fa-desktop"></i>
+                </button>
+                <button id="share-code-btn" class="icon-btn" title="Share Room Code">
+                    <i class="fas fa-share-alt"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Room Code Banner -->
+        <div id="code-banner" class="code-banner">
+            <div class="code-content">
+                <span class="code-label">Room Code:</span>
+                <span id="current-code" class="code-value">LOADING</span>
+                <button id="copy-code-btn" class="copy-btn">
+                    <i class="fas fa-copy"></i> Copy
+                </button>
+            </div>
+        </div>
+
+        <!-- Messages Area -->
+        <div class="messages-wrapper">
+            <div id="messages-container" class="messages-container">
+                <div id="messages" class="messages">
+                    <!-- Messages will appear here -->
+                </div>
+                <div id="typing-indicator" class="typing-indicator hidden">
+                    <span class="typing-text"></span>
+                    <div class="typing-dots">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="input-area">
+            <button id="attach-btn" class="icon-btn" title="Attach File">
+                <i class="fas fa-paperclip"></i>
+            </button>
+            <input type="file" id="file-input" hidden multiple>
+
+            <div class="message-input-wrapper">
+                <input type="text" id="message-input" placeholder="Type a message..." autocomplete="off">
+                <button id="emoji-btn" class="emoji-btn">
+                    <i class="fas fa-smile"></i>
+                </button>
+            </div>
+
+            <button id="send-btn" class="send-btn">
+                <i class="fas fa-paper-plane"></i>
+            </button>
+        </div>
+
+        <!-- Emoji Picker -->
+        <div id="emoji-picker" class="emoji-picker hidden">
+            <div class="emoji-header">
+                <span>Emoji</span>
+                <button class="close-emoji"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="emoji-grid" id="emoji-grid">
+                <!-- Emojis will be added by JS -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Group Call Screen -->
+    <div id="call-screen" class="screen">
+        <div class="call-container">
+            <!-- Video Grid -->
+            <div id="video-grid" class="video-grid grid-1">
+                <!-- Videos will be added dynamically -->
+            </div>
+
+            <!-- Call Info Bar -->
+            <div class="call-info-bar">
+                <div class="call-info">
+                    <span class="call-status" id="call-status">Connecting...</span>
+                    <span class="call-timer" id="call-timer">00:00</span>
+                </div>
+                <div class="participants-count">
+                    <i class="fas fa-users"></i>
+                    <span id="call-participants-count">1</span>
+                </div>
+            </div>
+
+            <!-- Call Controls -->
+            <div class="call-controls">
+                <button id="toggle-mic" class="control-btn active" title="Mute/Unmute">
+                    <i class="fas fa-microphone"></i>
+                </button>
+                <button id="toggle-camera" class="control-btn active" title="Camera On/Off">
+                    <i class="fas fa-video"></i>
+                </button>
+                <button id="share-screen" class="control-btn" title="Share Screen">
+                    <i class="fas fa-desktop"></i>
+                </button>
+                <button id="start-recording" class="control-btn" title="Record Call">
+                    <i class="fas fa-record-vinyl"></i>
+                </button>
+                <button id="end-call-btn" class="control-btn end-call" title="End Call">
+                    <i class="fas fa-phone-slash"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Incoming Call Modal -->
+    <div id="incoming-call-modal" class="modal hidden">
+        <div class="modal-content call-modal">
+            <div class="caller-info">
+                <div class="caller-avatar">
+                    <i class="fas fa-user"></i>
+                </div>
+                <h3 id="caller-name">Someone</h3>
+                <p id="call-type-text">is calling...</p>
+            </div>
+            <div class="call-actions">
+                <button id="decline-call" class="action-btn decline">
+                    <i class="fas fa-phone-slash"></i>
+                    <span>Decline</span>
+                </button>
+                <button id="accept-call" class="action-btn accept">
+                    <i class="fas fa-phone"></i>
+                    <span>Accept</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- File Transfer Modal -->
+    <div id="file-modal" class="modal hidden">
+        <div class="modal-content file-modal">
+            <div class="modal-header">
+                <h3><i class="fas fa-file-upload"></i> Send Files</h3>
+                <button class="close-modal" id="close-file-modal"><i class="fas fa-times"></i></button>
+            </div>
+            <div id="file-list" class="file-list">
+                <!-- Files will be listed here -->
+            </div>
+            <div class="transfer-progress hidden" id="transfer-progress">
+                <div class="progress-info">
+                    <span id="progress-file-name">Sending...</span>
+                    <span id="progress-percentage">0%</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button id="cancel-transfer" class="btn-secondary">Cancel</button>
+                <button id="start-transfer" class="btn-primary">
+                    <i class="fas fa-paper-plane"></i> Send Files
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recording Indicator -->
+    <div id="recording-indicator" class="recording-indicator hidden">
+        <div class="rec-dot"></div>
+        <span>Recording...</span>
+        <span id="recording-time">00:00</span>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <p id="loading-text">Connecting...</p>
+    </div>
+
+    <!-- Privacy Notice -->
+    <div id="privacy-notice" class="privacy-notice hidden">
+        <div class="notice-content">
+            <i class="fas fa-shield-alt"></i>
+            <p>This app uses your camera and microphone for video calls. All communications are end-to-end encrypted and
+                not stored on any server.</p>
+            <button id="accept-privacy" class="btn-primary">I Understand</button>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="app.js"></script>
+</body>
+
+</html>
