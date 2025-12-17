@@ -1,106 +1,49 @@
-// ===== E2E ENCRYPTION MODULE =====
-class E2EEncryption {
-    constructor() {
-        this.roomKey = null;
-        this.initialized = false;
-    }
-
-    generateRoomKey(roomCode) {
-        const salt = CryptoJS.lib.WordArray.random(128 / 8);
-        this.roomKey = CryptoJS.PBKDF2(roomCode, salt, {
-            keySize: 256 / 32,
-            iterations: 1000
-        });
-        this.initialized = true;
-        console.log('🔐 E2E Encryption initialized');
-        return salt.toString();
-    }
-
-    setRoomKey(roomCode, saltString) {
-        const salt = CryptoJS.enc.Hex.parse(saltString);
-        this.roomKey = CryptoJS.PBKDF2(roomCode, salt, {
-            keySize: 256 / 32,
-            iterations: 1000
-        });
-        this.initialized = true;
-        console.log('🔐 E2E Encryption key set');
-    }
-
-    encryptMessage(message) {
-        if (!this.initialized) return message;
-        try {
-            const encrypted = CryptoJS.AES.encrypt(message, this.roomKey);
-            return encrypted.toString();
-        } catch (error) {
-            console.error('❌ Encryption failed:', error);
-            return message;
-        }
-    }
-
-    decryptMessage(encryptedMessage) {
-        if (!this.initialized) return encryptedMessage;
-        try {
-            const decrypted = CryptoJS.AES.decrypt(encryptedMessage, this.roomKey);
-            return decrypted.toString(CryptoJS.enc.Utf8);
-        } catch (error) {
-            console.error('❌ Decryption failed:', error);
-            return '[Encrypted Message]';
-        }
-    }
-}
-
 // ===== Global Variables =====
 let socket;
 let currentRoom = '';
 let currentUsername = '';
 let mySocketId = '';
 
-const encryption = new E2EEncryption();
-let encryptionSalt = null;
-
+// WebRTC
 let localStream = null;
 let screenStream = null;
-let peerConnections = new Map();
-let remoteStreams = new Map();
+let peerConnections = new Map(); // socketId -> RTCPeerConnection
+let remoteStreams = new Map(); // socketId -> MediaStream
 
+// Call State
 let isInCall = false;
 let isMicMuted = false;
 let isCameraOff = false;
 let isScreenSharing = false;
-let currentCallType = null;
+let currentCallType = null; // 'audio' or 'video'
 
+// Recording
 let mediaRecorder = null;
 let recordedChunks = [];
 let recordingStartTime = null;
 let recordingInterval = null;
 
+// File Transfer
 let filesToSend = [];
-let receivingFiles = new Map();
+let receivingFiles = new Map(); // fileId -> {fileInfo, chunks}
 
+// Timers
 let callTimer = null;
 let callDuration = 0;
 let typingTimeout = null;
 
-// FIXED: Better ICE servers for connectivity
+// ICE Servers Configuration
 const iceServers = {
     iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' },
         { urls: 'stun:stun2.l.google.com:19302' },
-        {
-            urls: 'turn:openrelay.metered.ca:80',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        },
-        {
-            urls: 'turn:openrelay.metered.ca:443',
-            username: 'openrelayproject',
-            credential: 'openrelayproject'
-        }
-    ],
-    iceCandidatePoolSize: 10
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' }
+    ]
 };
 
+// Emoji List
 const emojis = [
     '😀', '😃', '😄', '😁', '😆', '😅', '🤣', '😂', '🙂', '🙃', '😉', '😊', '😇', '🥰', '😍', '🤩', '😘', '😗', '😚', '😙',
     '😋', '😛', '😜', '🤪', '😝', '🤑', '🤗', '🤭', '🤫', '🤔', '🤐', '🤨', '😐', '😑', '😶', '😏', '😒', '🙄', '😬', '🤥',
@@ -110,7 +53,8 @@ const emojis = [
     '🤖', '😺', '😸', '😹', '😻', '😼', '😽', '🙀', '😿', '😾', '🙈', '🙉', '🙊', '💋', '💌', '💘', '💝', '💖', '💗', '💓',
     '💞', '💕', '💟', '❣️', '💔', '❤️', '🧡', '💛', '💚', '💙', '💜', '🤎', '🖤', '🤍', '💯', '💢', '💥', '💫', '💦', '💨',
     '🕳️', '💬', '👁️‍🗨️', '🗨️', '🗯️', '💭', '💤', '👋', '🤚', '🖐️', '✋', '🖖', '👌', '🤏', '✌️', '🤞', '🤟', '🤘', '🤙',
-    '👈', '👉', '👆', '🖕', '👇', '☝️', '👍', '👎', '✊', '👊', '🤛', '🤜', '👏', '🙌', '👐', '🤲', '🤝', '🙏', '✍️', '💅'
+    '👈', '👉', '👆', '🖕', '👇', '☝️', '👍', '👎', '✊', '👊', '🤛', '🤜', '👏', '🙌', '👐', '🤲', '🤝', '🙏', '✍️', '💅',
+    '🤳', '💪', '🦾', '🦿', '🦵', '🦶', '👂', '🦻', '👃', '🧠', '🦷', '🦴', '👀', '👁️', '👅', '👄', '💏', '👨‍❤️‍💋‍👨', '👩‍❤️‍💋‍👩'
 ];
 
 // ===== Initialization =====
@@ -124,11 +68,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // ===== Socket Initialization =====
 function initializeSocket() {
-    socket = io({
-        transports: ['websocket', 'polling'],
-        upgrade: true,
-        rememberUpgrade: true
-    });
+    socket = io();
 
     socket.on('connect', () => {
         console.log('✅ Connected to server');
@@ -141,47 +81,17 @@ function initializeSocket() {
         showToast('Connection lost. Reconnecting...', 'error');
     });
 
-    socket.on('reconnect', () => {
-        console.log('🔄 Reconnected to server');
-        showToast('Reconnected successfully!', 'success');
-    });
-
     // Room Events
-    socket.on('room-joined', ({ roomCode, users, userCount, isFirstUser }) => {
+    socket.on('room-joined', ({ roomCode, users, userCount }) => {
         currentRoom = roomCode;
-
-        // Initialize encryption
-        if (isFirstUser) {
-            encryptionSalt = encryption.generateRoomKey(roomCode);
-            socket.emit('share-encryption-key', { roomCode, salt: encryptionSalt });
-            console.log('🔐 First user - generated encryption key');
-        } else {
-            socket.emit('request-encryption-key', { roomCode });
-        }
-
         showScreen('chat');
         document.getElementById('room-title').textContent = `Room: ${roomCode}`;
         document.getElementById('current-code').textContent = roomCode;
         updateUserCount(userCount);
-        addSystemMessage(`🔒 Welcome to encrypted room ${roomCode}!`);
+        addSystemMessage(`Welcome to room ${roomCode}! 🎉`);
 
         if (users.length > 0) {
             addSystemMessage(`${users.length} user(s) already in the room`);
-        }
-    });
-
-    socket.on('encryption-key', ({ salt }) => {
-        encryption.setRoomKey(currentRoom, salt);
-        console.log('🔐 Received and set encryption key');
-        addSystemMessage('🔒 End-to-End Encryption enabled!');
-    });
-
-    socket.on('encryption-key-request', () => {
-        if (encryptionSalt) {
-            socket.emit('share-encryption-key', {
-                roomCode: currentRoom,
-                salt: encryptionSalt
-            });
         }
     });
 
@@ -195,15 +105,15 @@ function initializeSocket() {
         addSystemMessage(`${username} left the room 👋`);
         updateUserCount(userCount);
 
+        // Clean up peer connection if exists
         if (peerConnections.has(userId)) {
             closePeerConnection(userId);
         }
     });
 
-    // Chat Events - WITH ENCRYPTION
+    // Chat Events
     socket.on('chat-message', ({ message, username, time, senderId }) => {
-        const decryptedMessage = encryption.decryptMessage(message);
-        addMessage(decryptedMessage, username, time, false, senderId);
+        addMessage(message, username, time, false, senderId);
         playNotificationSound();
     });
 
@@ -226,7 +136,12 @@ function initializeSocket() {
 
         if (!isInCall) {
             currentCallType = callType;
-            showIncomingCallModal(callerName, callType);
+            showIncomingCallModal(callerName, callType, []);
+        } else {
+            console.log('Already in call, creating peer connection');
+            setTimeout(() => {
+                createPeerConnection(callerId, false);
+            }, 1000);
         }
     });
 
@@ -255,14 +170,14 @@ function initializeSocket() {
         }
     });
 
-    socket.on('call-participants', ({ participants }) => {
+    socket.on('call-participants', ({ participants, roomCode }) => {
         console.log(`📋 Got participant list:`, participants);
 
         participants.forEach(participant => {
             if (participant.socketId !== mySocketId) {
                 setTimeout(() => {
                     createPeerConnection(participant.socketId, true);
-                }, 1500);
+                }, 1000);
             }
         });
     });
@@ -288,11 +203,11 @@ function initializeSocket() {
         const pc = peerConnections.get(from);
         try {
             await pc.setRemoteDescription(new RTCSessionDescription(offer));
-            console.log('✅ Remote description set for offer');
+            console.log('✅ Remote description set');
 
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-            console.log('✅ Answer created');
+            console.log('✅ Answer created and set as local description');
 
             socket.emit('answer', {
                 answer: answer,
@@ -302,7 +217,6 @@ function initializeSocket() {
 
         } catch (error) {
             console.error('❌ Error handling offer:', error);
-            showToast('Connection error, retrying...', 'error');
         }
     });
 
@@ -364,9 +278,7 @@ function initializeSocket() {
             fileData.chunks.push(chunk);
 
             const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
-            if (progress % 20 === 0) {
-                console.log(`Receiving ${fileName}: ${progress}%`);
-            }
+            console.log(`Receiving ${fileName}: ${progress}%`);
         }
     });
 
@@ -404,9 +316,6 @@ function initializeEventListeners() {
     document.getElementById('room-code').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') joinRoom();
     });
-    document.getElementById('username').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') document.getElementById('room-code').focus();
-    });
 
     // Chat Screen Header
     document.getElementById('leave-btn').addEventListener('click', leaveRoom);
@@ -434,17 +343,7 @@ function initializeEventListeners() {
     document.getElementById('cancel-transfer').addEventListener('click', () => {
         hideModal('file-modal');
         filesToSend = [];
-        document.getElementById('file-input').value = '';
     });
-
-    const closeFileModal = document.getElementById('close-file-modal');
-    if (closeFileModal) {
-        closeFileModal.addEventListener('click', () => {
-            hideModal('file-modal');
-            filesToSend = [];
-            document.getElementById('file-input').value = '';
-        });
-    }
 
     // Emoji Picker
     document.getElementById('emoji-btn').addEventListener('click', toggleEmojiPicker);
@@ -460,10 +359,7 @@ function initializeEventListeners() {
     document.getElementById('toggle-camera').addEventListener('click', toggleCamera);
     document.getElementById('share-screen').addEventListener('click', shareScreen);
     document.getElementById('start-recording').addEventListener('click', toggleRecording);
-    document.getElementById('end-call-btn').addEventListener('click', () => {
-        socket.emit('end-call', { roomCode: currentRoom });
-        endCall();
-    });
+    document.getElementById('end-call-btn').addEventListener('click', endCall);
 
     // Incoming Call Modal
     document.getElementById('accept-call').addEventListener('click', acceptCall);
@@ -487,7 +383,6 @@ function initializeEmojis() {
     emojis.forEach(emoji => {
         const button = document.createElement('button');
         button.textContent = emoji;
-        button.type = 'button';
         button.addEventListener('click', () => {
             const input = document.getElementById('message-input');
             input.value += emoji;
@@ -523,21 +418,10 @@ function joinRoom() {
         return;
     }
 
-    if (roomCode.length < 4) {
-        showToast('Room code must be at least 4 characters', 'error');
-        return;
-    }
-
     currentUsername = username;
     currentRoom = roomCode;
 
-    showLoadingOverlay('Joining room...');
-
     socket.emit('join-room', { roomCode, username });
-
-    setTimeout(() => {
-        hideLoadingOverlay();
-    }, 1000);
 }
 
 function leaveRoom() {
@@ -549,28 +433,20 @@ function leaveRoom() {
     showScreen('join');
     clearMessages();
     currentRoom = '';
-    encryptionSalt = null;
-    encryption.initialized = false;
     showToast('Left the room', 'info');
 }
 
 function copyRoomCode() {
-    if (!currentRoom) return;
-
     navigator.clipboard.writeText(currentRoom).then(() => {
-        showToast('Room code copied to clipboard!', 'success');
-    }).catch(() => {
-        showToast('Failed to copy code', 'error');
+        showToast('Room code copied!', 'success');
     });
 }
 
 function shareRoomCode() {
-    if (!currentRoom) return;
-
     if (navigator.share) {
         navigator.share({
             title: 'Join ConnectChat Ultra',
-            text: `Join my encrypted video chat!\n\nRoom Code: ${currentRoom}\n\nOpen: ${window.location.origin}`,
+            text: `Join my room on ConnectChat Ultra! Room Code: ${currentRoom}`,
             url: window.location.href
         }).catch(() => {
             copyRoomCode();
@@ -598,16 +474,12 @@ function sendMessage() {
         hour12: true
     });
 
-    // Encrypt message before sending
-    const encryptedMessage = encryption.encryptMessage(message);
-
     socket.emit('chat-message', {
         roomCode: currentRoom,
-        message: encryptedMessage,
+        message: message,
         username: currentUsername
     });
 
-    // Show original message locally
     addMessage(message, currentUsername, time, true, mySocketId);
     input.value = '';
 
@@ -653,7 +525,7 @@ function addFileMessage(fileName, fileSize, blob, isSent, senderName = null) {
 
     const fileIcon = getFileIcon(fileName);
     const formattedSize = formatFileSize(fileSize);
-    const downloadId = 'download-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+    const downloadId = 'download-' + Date.now();
 
     messageDiv.innerHTML = `
         ${!isSent && senderName ? `<div class="sender">${escapeHtml(senderName)}</div>` : ''}
@@ -675,14 +547,9 @@ function addFileMessage(fileName, fileSize, blob, isSent, senderName = null) {
     messagesDiv.appendChild(messageDiv);
 
     if (blob) {
-        setTimeout(() => {
-            const btn = document.getElementById(downloadId);
-            if (btn) {
-                btn.addEventListener('click', () => {
-                    downloadFile(fileName, blob);
-                });
-            }
-        }, 100);
+        document.getElementById(downloadId).addEventListener('click', () => {
+            downloadFile(fileName, blob);
+        });
     }
 
     scrollToBottom();
@@ -712,9 +579,7 @@ function hideTypingIndicator() {
 
 function scrollToBottom() {
     const container = document.querySelector('.messages-container');
-    if (container) {
-        container.scrollTop = container.scrollHeight;
-    }
+    container.scrollTop = container.scrollHeight;
 }
 
 function clearMessages() {
@@ -726,20 +591,6 @@ function handleFileSelect(event) {
     filesToSend = Array.from(event.target.files);
 
     if (filesToSend.length === 0) return;
-
-    // Check file size (max 100MB per file)
-    const maxSize = 100 * 1024 * 1024;
-    const oversized = filesToSend.filter(f => f.size > maxSize);
-
-    if (oversized.length > 0) {
-        showToast(`Some files are too large (max 100MB). They will be skipped.`, 'warning');
-        filesToSend = filesToSend.filter(f => f.size <= maxSize);
-    }
-
-    if (filesToSend.length === 0) {
-        event.target.value = '';
-        return;
-    }
 
     displayFileList();
     showModal('file-modal');
@@ -870,14 +721,13 @@ function downloadFile(fileName, blob) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    showToast(`Downloaded ${fileName}`, 'success');
 }
 
 function generateFileId() {
     return `file_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// ===== WebRTC Call Functions - FULLY FIXED =====
+// ===== WebRTC Call Functions - FIXED =====
 async function startCall(callType) {
     console.log(`🎥 Starting ${callType} call...`);
     currentCallType = callType;
@@ -890,19 +740,17 @@ async function startCall(callType) {
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
-                sampleRate: 48000,
-                channelCount: 1
+                sampleRate: 48000
             },
             video: callType === 'video' ? {
                 width: { ideal: 1280, max: 1920 },
                 height: { ideal: 720, max: 1080 },
-                frameRate: { ideal: 30, max: 30 },
-                facingMode: 'user'
+                frameRate: { ideal: 30, max: 30 }
             } : false
         };
 
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        console.log('✅ Got local stream:', localStream.getTracks().map(t => `${t.kind}: ${t.label}`));
+        console.log('✅ Got local stream:', localStream.getTracks());
 
         hideLoadingOverlay();
 
@@ -953,40 +801,30 @@ function createPeerConnection(remoteSocketId, shouldCreateOffer) {
     const pc = new RTCPeerConnection(iceServers);
     peerConnections.set(remoteSocketId, pc);
 
-    // Add local tracks - FIXED
     if (localStream) {
         localStream.getTracks().forEach(track => {
-            console.log(`➕ Adding local ${track.kind} track: ${track.label}`);
-            const sender = pc.addTrack(track, localStream);
-            console.log('✅ Track added successfully');
+            console.log(`➕ Adding local ${track.kind} track to peer connection`);
+            pc.addTrack(track, localStream);
         });
     }
 
-    // Handle remote stream - FIXED
     pc.ontrack = (event) => {
         console.log(`📹 Received remote ${event.track.kind} track from ${remoteSocketId}`);
-        console.log(`Track state: ${event.track.readyState}, enabled: ${event.track.enabled}`);
 
         if (!remoteStreams.has(remoteSocketId)) {
             const remoteStream = new MediaStream();
             remoteStreams.set(remoteSocketId, remoteStream);
-            addVideoElement(remoteSocketId, remoteStream, 'User', false);
+
+            const username = 'User';
+            addVideoElement(remoteSocketId, remoteStream, username, false);
         }
 
         const remoteStream = remoteStreams.get(remoteSocketId);
         remoteStream.addTrack(event.track);
 
         console.log(`✅ Remote stream now has ${remoteStream.getTracks().length} tracks`);
-
-        // Update video element
-        const videoElement = document.querySelector(`#video-${remoteSocketId} video`);
-        if (videoElement) {
-            videoElement.srcObject = remoteStream;
-            console.log('✅ Video element updated');
-        }
     };
 
-    // Handle ICE candidates
     pc.onicecandidate = (event) => {
         if (event.candidate) {
             console.log(`📤 Sending ICE candidate to ${remoteSocketId}`);
@@ -997,7 +835,6 @@ function createPeerConnection(remoteSocketId, shouldCreateOffer) {
         }
     };
 
-    // Handle connection state changes
     pc.onconnectionstatechange = () => {
         console.log(`🔌 Connection state with ${remoteSocketId}: ${pc.connectionState}`);
 
@@ -1007,28 +844,16 @@ function createPeerConnection(remoteSocketId, shouldCreateOffer) {
         } else if (pc.connectionState === 'failed') {
             console.error('❌ Connection failed');
             showToast('Connection failed, retrying...', 'error');
-            setTimeout(() => {
-                closePeerConnection(remoteSocketId);
-                if (isInCall && shouldCreateOffer) {
-                    createPeerConnection(remoteSocketId, true);
-                }
-            }, 2000);
+            closePeerConnection(remoteSocketId);
         } else if (pc.connectionState === 'disconnected') {
             console.warn('⚠️ Connection disconnected');
         }
     };
 
-    // Handle ICE connection state
     pc.oniceconnectionstatechange = () => {
         console.log(`🧊 ICE state with ${remoteSocketId}: ${pc.iceConnectionState}`);
     };
 
-    // Handle signaling state
-    pc.onsignalingstatechange = () => {
-        console.log(`📡 Signaling state with ${remoteSocketId}: ${pc.signalingState}`);
-    };
-
-    // Create offer if needed
     if (shouldCreateOffer) {
         setTimeout(() => {
             createAndSendOffer(remoteSocketId);
@@ -1071,8 +896,6 @@ async function createAndSendOffer(remoteSocketId) {
 }
 
 function closePeerConnection(socketId) {
-    console.log(`🔌 Closing peer connection with ${socketId}`);
-
     const pc = peerConnections.get(socketId);
     if (pc) {
         pc.close();
@@ -1102,14 +925,6 @@ function addVideoElement(socketId, stream, username, isLocal) {
     video.playsInline = true;
     if (isLocal) video.muted = true;
 
-    // FIXED: Ensure video plays
-    video.onloadedmetadata = () => {
-        console.log(`📹 Video metadata loaded for ${username}`);
-        video.play().catch(e => {
-            console.error('❌ Video play failed:', e);
-        });
-    };
-
     const overlay = document.createElement('div');
     overlay.className = 'video-overlay';
     overlay.innerHTML = `
@@ -1132,8 +947,6 @@ function addVideoElement(socketId, stream, username, isLocal) {
 
     const participantCount = document.querySelectorAll('.video-wrapper').length;
     updateCallParticipantsCount(participantCount);
-
-    console.log(`✅ Video element added for ${username}`);
 }
 
 function removeVideoElement(socketId) {
@@ -1184,8 +997,6 @@ function toggleMicrophone() {
         if (statusIcon) {
             statusIcon.classList.toggle('muted', !audioTrack.enabled);
         }
-
-        showToast(audioTrack.enabled ? 'Microphone unmuted' : 'Microphone muted', 'info');
     }
 }
 
@@ -1207,8 +1018,6 @@ function toggleCamera() {
         if (statusIcon) {
             statusIcon.classList.toggle('muted', !videoTrack.enabled);
         }
-
-        showToast(videoTrack.enabled ? 'Camera on' : 'Camera off', 'info');
     }
 }
 
@@ -1217,8 +1026,7 @@ async function shareScreen() {
         if (!isScreenSharing) {
             screenStream = await navigator.mediaDevices.getDisplayMedia({
                 video: {
-                    cursor: 'always',
-                    displaySurface: 'monitor'
+                    cursor: 'always'
                 },
                 audio: false
             });
@@ -1378,13 +1186,8 @@ function updateRecordingTime() {
 
 // ===== End Call =====
 function endCall() {
-    console.log('📞 Ending call...');
-
     if (localStream) {
-        localStream.getTracks().forEach(track => {
-            track.stop();
-            console.log(`🛑 Stopped ${track.kind} track`);
-        });
+        localStream.getTracks().forEach(track => track.stop());
         localStream = null;
     }
 
@@ -1418,7 +1221,6 @@ function endCall() {
     showScreen('chat');
 
     showToast('Call ended', 'info');
-    console.log('✅ Call cleanup complete');
 }
 
 // ===== Call Timer =====
@@ -1456,18 +1258,16 @@ function updateCallParticipantsCount(count) {
 }
 
 // ===== Incoming Call Modal =====
-function showIncomingCallModal(callerName, callType) {
+function showIncomingCallModal(callerName, callType, participants) {
     document.getElementById('caller-name').textContent = callerName;
     document.getElementById('call-type-text').textContent =
         callType === 'video' ? 'is starting a video call...' : 'is starting a voice call...';
 
     showModal('incoming-call-modal');
-    playRingtone();
 }
 
 function hideIncomingCallModal() {
     hideModal('incoming-call-modal');
-    stopRingtone();
 }
 
 async function acceptCall() {
@@ -1530,13 +1330,13 @@ async function checkMediaDevices() {
         console.log('📹 Video devices:', hasVideo);
 
         if (!hasAudio) {
-            console.warn('⚠️ No audio input device found');
+            console.warn('No audio input device found');
         }
         if (!hasVideo) {
-            console.warn('⚠️ No video input device found');
+            console.warn('No video input device found');
         }
     } catch (error) {
-        console.error('❌ Error checking media devices:', error);
+        console.error('Error checking media devices:', error);
     }
 }
 
@@ -1545,47 +1345,29 @@ function showScreen(screenName) {
     document.querySelectorAll('.screen').forEach(screen => {
         screen.classList.remove('active');
     });
-    const targetScreen = document.getElementById(`${screenName}-screen`);
-    if (targetScreen) {
-        targetScreen.classList.add('active');
-    }
+    document.getElementById(`${screenName}-screen`).classList.add('active');
 }
 
 function showModal(modalId) {
-    const modal = document.getElementById(modalId);
-    if (modal) {
-        modal.classList.remove('hidden');
-    }
+    document.getElementById(modalId).classList.remove('hidden');
 }
 
 function hideModal(modalId) {
-    const modal = document.getElementById(modalId);
-    if (modal) {
-        modal.classList.add('hidden');
-    }
+    document.getElementById(modalId).classList.add('hidden');
 }
 
 function showLoadingOverlay(message = 'Loading...') {
     const overlay = document.getElementById('loading-overlay');
-    const text = document.getElementById('loading-text');
-    if (overlay && text) {
-        text.textContent = message;
-        overlay.classList.remove('hidden');
-    }
+    overlay.querySelector('p').textContent = message;
+    overlay.classList.remove('hidden');
 }
 
 function hideLoadingOverlay() {
-    const overlay = document.getElementById('loading-overlay');
-    if (overlay) {
-        overlay.classList.add('hidden');
-    }
+    document.getElementById('loading-overlay').classList.add('hidden');
 }
 
 function toggleEmojiPicker() {
-    const picker = document.getElementById('emoji-picker');
-    if (picker) {
-        picker.classList.toggle('hidden');
-    }
+    document.getElementById('emoji-picker').classList.toggle('hidden');
 }
 
 function escapeHtml(text) {
@@ -1598,24 +1380,48 @@ function getFileIcon(fileName) {
     const ext = fileName.split('.').pop().toLowerCase();
     const icons = {
         pdf: 'fa-file-pdf',
-        doc: 'fa-file-word', docx: 'fa-file-word',
-        xls: 'fa-file-excel', xlsx: 'fa-file-excel',
-        ppt: 'fa-file-powerpoint', pptx: 'fa-file-powerpoint',
+        doc: 'fa-file-word',
+        docx: 'fa-file-word',
+        xls: 'fa-file-excel',
+        xlsx: 'fa-file-excel',
+        ppt: 'fa-file-powerpoint',
+        pptx: 'fa-file-powerpoint',
         txt: 'fa-file-alt',
-        jpg: 'fa-file-image', jpeg: 'fa-file-image', png: 'fa-file-image', gif: 'fa-file-image', svg: 'fa-file-image',
-        mp4: 'fa-file-video', mkv: 'fa-file-video', avi: 'fa-file-video', mov: 'fa-file-video',
-        mp3: 'fa-file-audio', wav: 'fa-file-audio', flac: 'fa-file-audio',
-        zip: 'fa-file-archive', rar: 'fa-file-archive', '7z': 'fa-file-archive',
-        js: 'fa-file-code', html: 'fa-file-code', css: 'fa-file-code', json: 'fa-file-code'
+        jpg: 'fa-file-image',
+        jpeg: 'fa-file-image',
+        png: 'fa-file-image',
+        gif: 'fa-file-image',
+        svg: 'fa-file-image',
+        bmp: 'fa-file-image',
+        mp4: 'fa-file-video',
+        mkv: 'fa-file-video',
+        avi: 'fa-file-video',
+        mov: 'fa-file-video',
+        wmv: 'fa-file-video',
+        mp3: 'fa-file-audio',
+        wav: 'fa-file-audio',
+        flac: 'fa-file-audio',
+        zip: 'fa-file-archive',
+        rar: 'fa-file-archive',
+        '7z': 'fa-file-archive',
+        tar: 'fa-file-archive',
+        js: 'fa-file-code',
+        html: 'fa-file-code',
+        css: 'fa-file-code',
+        json: 'fa-file-code',
+        xml: 'fa-file-code'
     };
+
     return icons[ext] || 'fa-file';
 }
 
 function formatFileSize(bytes) {
     if (bytes === 0) return '0 B';
+
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
+
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
@@ -1666,20 +1472,6 @@ function playNotificationSound() {
     }
 }
 
-let ringtoneInterval;
-function playRingtone() {
-    ringtoneInterval = setInterval(() => {
-        playNotificationSound();
-    }, 1000);
-}
-
-function stopRingtone() {
-    if (ringtoneInterval) {
-        clearInterval(ringtoneInterval);
-        ringtoneInterval = null;
-    }
-}
-
 // ===== Keyboard Shortcuts =====
 document.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
@@ -1690,30 +1482,13 @@ document.addEventListener('keydown', (e) => {
         document.querySelectorAll('.modal:not(.hidden)').forEach(modal => {
             modal.classList.add('hidden');
         });
-        const emojiPicker = document.getElementById('emoji-picker');
-        if (emojiPicker) {
-            emojiPicker.classList.add('hidden');
-        }
-    }
-
-    // Mute/unmute with 'M' key during call
-    if (isInCall && e.key.toLowerCase() === 'm' && !e.target.matches('input, textarea')) {
-        e.preventDefault();
-        toggleMicrophone();
-    }
-
-    // Toggle camera with 'V' key during call
-    if (isInCall && e.key.toLowerCase() === 'v' && !e.target.matches('input, textarea')) {
-        e.preventDefault();
-        toggleCamera();
+        document.getElementById('emoji-picker').classList.add('hidden');
     }
 });
 
 // ===== Cleanup on page unload =====
-window.addEventListener('beforeunload', (e) => {
+window.addEventListener('beforeunload', () => {
     if (isInCall) {
-        e.preventDefault();
-        e.returnValue = 'You are in a call. Are you sure you want to leave?';
         endCall();
     }
     if (currentRoom) {
@@ -1721,33 +1496,13 @@ window.addEventListener('beforeunload', (e) => {
     }
 });
 
-// ===== Service Worker for PWA (Optional) =====
-if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-        // Uncomment to enable PWA
-        // navigator.serviceWorker.register('/sw.js').then(registration => {
-        //     console.log('SW registered:', registration);
-        // }).catch(error => {
-        //     console.log('SW registration failed:', error);
-        // });
-    });
-}
-
 console.log(`
-╔════════════════════════════════════════════╗
-║   🚀 ConnectChat Ultra - Client Ready!     ║
-║                                            ║
-║   ✅ E2E Encryption: ENABLED               ║
-║   ✅ Group Calls: FIXED                    ║
-║   ✅ WebRTC: OPTIMIZED                     ║
-║   ✅ File Transfer: READY                  ║
-║   ✅ Screen Sharing: READY                 ║
-║   ✅ Call Recording: READY                 ║
-║                                            ║
-║   Keyboard Shortcuts:                      ║
-║   • Ctrl+Enter: Send message               ║
-║   • M: Mute/Unmute (in call)               ║
-║   • V: Toggle camera (in call)             ║
-║   • ESC: Close modals                      ║
-╚════════════════════════════════════════════╝
+╔════════════════════════════════════════╗
+║   🚀 ConnectChat Ultra - Ready!        ║
+║                                        ║
+║   ✅ Group Calls Fixed                 ║
+║   ✅ Screen Sharing                    ║
+║   ✅ Call Recording                    ║
+║   ✅ File Transfer                     ║
+╚════════════════════════════════════════╝
 `);

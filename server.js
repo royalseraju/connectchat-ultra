@@ -1,11 +1,9 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const compression = require('compression');
 
 const app = express();
 const server = http.createServer(app);
-
 const io = new Server(server, {
     cors: {
         origin: "*",
@@ -13,33 +11,18 @@ const io = new Server(server, {
     },
     maxHttpBufferSize: 1e8,
     pingTimeout: 60000,
-    pingInterval: 25000,
-    transports: ['websocket', 'polling']
+    pingInterval: 25000
 });
 
-// Middleware
-app.use(compression());
 app.use(express.static('public'));
 
-// Force HTTPS in production
-app.use((req, res, next) => {
-    if (req.header('x-forwarded-proto') !== 'https' && process.env.NODE_ENV === 'production') {
-        res.redirect(`https://${req.header('host')}${req.url}`);
-    } else {
-        next();
-    }
-});
-
-// Data structures
 const rooms = new Map();
 const users = new Map();
 const roomCalls = new Map();
-const encryptionKeys = new Map();
 
 io.on('connection', (socket) => {
     console.log('✅ User connected:', socket.id);
 
-    // Join Room
     socket.on('join-room', ({ roomCode, username }) => {
         socket.join(roomCode);
 
@@ -48,11 +31,7 @@ io.on('connection', (socket) => {
         }
         rooms.get(roomCode).add(socket.id);
 
-        users.set(socket.id, {
-            username,
-            roomCode,
-            socketId: socket.id
-        });
+        users.set(socket.id, { username, roomCode, socketId: socket.id });
 
         const roomUsers = [];
         rooms.get(roomCode).forEach(id => {
@@ -65,41 +44,21 @@ io.on('connection', (socket) => {
             }
         });
 
-        // Notify others
         socket.to(roomCode).emit('user-joined', {
             socketId: socket.id,
             username: username,
             userCount: rooms.get(roomCode).size
         });
 
-        // Send room info to new user
         socket.emit('room-joined', {
             roomCode,
             users: roomUsers.filter(u => u.socketId !== socket.id),
-            userCount: rooms.get(roomCode).size,
-            isFirstUser: roomUsers.length === 1
+            userCount: rooms.get(roomCode).size
         });
 
-        console.log(`👤 ${username} joined room: ${roomCode} (Total: ${rooms.get(roomCode).size})`);
+        console.log(`👤 ${username} joined room: ${roomCode}`);
     });
 
-    // Encryption key sharing
-    socket.on('share-encryption-key', ({ roomCode, salt }) => {
-        encryptionKeys.set(roomCode, salt);
-        socket.to(roomCode).emit('encryption-key', { salt });
-        console.log(`🔐 Encryption key shared for room: ${roomCode}`);
-    });
-
-    socket.on('request-encryption-key', ({ roomCode }) => {
-        const salt = encryptionKeys.get(roomCode);
-        if (salt) {
-            socket.emit('encryption-key', { salt });
-        } else {
-            socket.to(roomCode).emit('encryption-key-request');
-        }
-    });
-
-    // Chat Messages
     socket.on('chat-message', ({ roomCode, message, username }) => {
         const timestamp = new Date().toLocaleTimeString('en-US', {
             hour: '2-digit',
@@ -115,7 +74,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // Typing Indicators
     socket.on('typing', ({ roomCode, username }) => {
         socket.to(roomCode).emit('user-typing', { username });
     });
@@ -124,9 +82,9 @@ io.on('connection', (socket) => {
         socket.to(roomCode).emit('user-stop-typing');
     });
 
-    // Call signaling - FIXED
+    // FIXED: Call signaling
     socket.on('call-start', ({ roomCode, callType }) => {
-        console.log(`📞 ${users.get(socket.id)?.username} starting ${callType} call`);
+        console.log(`📞 ${users.get(socket.id)?.username} starting ${callType} call in ${roomCode}`);
 
         if (!roomCalls.has(roomCode)) {
             roomCalls.set(roomCode, new Set());
@@ -135,7 +93,7 @@ io.on('connection', (socket) => {
 
         const user = users.get(socket.id);
 
-        // Notify everyone in room
+        // Notify ALL users in room about call
         io.in(roomCode).emit('call-started', {
             callerId: socket.id,
             callerName: user?.username,
@@ -145,7 +103,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('call-join', ({ roomCode }) => {
-        console.log(`📞 ${users.get(socket.id)?.username} joining call`);
+        console.log(`📞 ${users.get(socket.id)?.username} joining call in ${roomCode}`);
 
         if (!roomCalls.has(roomCode)) {
             roomCalls.set(roomCode, new Set());
@@ -153,8 +111,9 @@ io.on('connection', (socket) => {
         roomCalls.get(roomCode).add(socket.id);
 
         const user = users.get(socket.id);
-        const participants = [];
 
+        // Get all other participants
+        const participants = [];
         roomCalls.get(roomCode).forEach(id => {
             if (id !== socket.id && users.has(id)) {
                 participants.push({
@@ -164,19 +123,24 @@ io.on('connection', (socket) => {
             }
         });
 
-        socket.emit('call-participants', { participants });
+        // Tell new joiner about existing participants
+        socket.emit('call-participants', {
+            participants,
+            roomCode
+        });
 
+        // Tell others about new joiner
         socket.to(roomCode).emit('user-joined-call', {
             userId: socket.id,
             username: user?.username
         });
 
-        console.log(`✅ ${user?.username} joined call. Participants: ${roomCalls.get(roomCode).size}`);
+        console.log(`✅ ${user?.username} joined call. Total participants: ${roomCalls.get(roomCode).size}`);
     });
 
-    // WebRTC Signaling - FIXED
+    // FIXED: WebRTC signaling with better logging
     socket.on('offer', ({ offer, to, roomCode }) => {
-        console.log(`📤 Forwarding offer: ${socket.id} -> ${to}`);
+        console.log(`📤 Sending offer from ${socket.id} to ${to}`);
         io.to(to).emit('offer', {
             offer,
             from: socket.id,
@@ -185,7 +149,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('answer', ({ answer, to }) => {
-        console.log(`📤 Forwarding answer: ${socket.id} -> ${to}`);
+        console.log(`📤 Sending answer from ${socket.id} to ${to}`);
         io.to(to).emit('answer', {
             answer,
             from: socket.id
@@ -193,6 +157,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('ice-candidate', ({ candidate, to }) => {
+        console.log(`📤 Sending ICE candidate from ${socket.id} to ${to}`);
         io.to(to).emit('ice-candidate', {
             candidate,
             from: socket.id
@@ -205,6 +170,10 @@ io.on('connection', (socket) => {
             socket.to(roomCode).emit('user-left-call', {
                 userId: socket.id
             });
+
+            if (roomCalls.get(roomCode).size === 0) {
+                roomCalls.delete(roomCode);
+            }
         }
     });
 
@@ -217,7 +186,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Screen sharing
     socket.on('screen-share-start', ({ roomCode }) => {
         socket.to(roomCode).emit('screen-share-started', {
             userId: socket.id,
@@ -231,7 +199,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // File transfer
     socket.on('file-info', ({ roomCode, fileInfo }) => {
         socket.to(roomCode).emit('file-info', {
             fileInfo,
@@ -258,12 +225,10 @@ io.on('connection', (socket) => {
         });
     });
 
-    // Leave room
     socket.on('leave-room', ({ roomCode }) => {
         handleUserLeave(socket, roomCode);
     });
 
-    // Disconnect
     socket.on('disconnect', () => {
         const user = users.get(socket.id);
         if (user) {
@@ -285,7 +250,6 @@ io.on('connection', (socket) => {
 
             if (rooms.get(roomCode).size === 0) {
                 rooms.delete(roomCode);
-                encryptionKeys.delete(roomCode);
             }
         }
 
@@ -304,15 +268,12 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`
-╔════════════════════════════════════════════╗
-║   🚀 ConnectChat Ultra - Server Ready      ║
-║                                            ║
-║   🌐 http://localhost:${PORT}                ║
-║                                            ║
-║   ✅ E2E Encryption: Enabled               ║
-║   ✅ Group Calls: Fixed                    ║
-║   ✅ WebRTC: Optimized                     ║
-║   ✅ File Transfer: Ready                  ║
-╚════════════════════════════════════════════╝
+╔════════════════════════════════════════╗
+║   🚀 ConnectChat Ultra Server Ready    ║
+║                                        ║
+║   🌐 http://localhost:${PORT}            ║
+║                                        ║
+║   ✅ Group Calls Fixed!                ║
+╚════════════════════════════════════════╝
     `);
 });
